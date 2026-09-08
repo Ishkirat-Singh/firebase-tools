@@ -7,7 +7,7 @@ import {
   SECRET_VERSION_NAME_REGEX,
 } from "../gcp/secretManager";
 import { getActiveSecrets } from "./secretsUtils";
-import { ExtensionInstance } from "./types";
+import { ExtensionInstance, Param } from "./types";
 import { transferSecretToKits, secretHasExtensionsLabel } from "../deploy/extensions/secrets";
 import { FirebaseError } from "../error";
 import { logLabeledError } from "../utils";
@@ -98,6 +98,48 @@ function displaySpecs(specs: DeploymentInstanceSpec[]): void {
 }
 
 /**
+ * Converts a memory string (e.g. "256", "512Mi", "1Gi", "1024") to megabytes (MB) for comparison.
+ */
+export function memoryToMb(memory: string): number {
+  const trimmed = memory.trim();
+  if (/^\d+(?:\.\d+)?(?:Gi|GiB|G|GB)$/i.test(trimmed)) {
+    return parseFloat(trimmed) * 1024;
+  }
+  const parsed = parseFloat(trimmed);
+  return isNaN(parsed) ? 0 : parsed;
+}
+
+const V1_MEMORY_PARAM = "firebaseextensions.v1beta.function/memory";
+const V2_MEMORY_PARAM = "firebaseextensions.v1beta.v2function/memory";
+
+/**
+ * Resolves the memory configuration for a migrated Extension instance.
+ * If both V1 and V2 memory parameters are present, picks the one with the highest memory value.
+ */
+export function resolveMigratedMemory(
+  liveSystemParams: Record<string, string> = {},
+  specSystemParams: Param[] = [],
+): string | undefined {
+  const getParam = (paramName: string): string | undefined => {
+    if (paramName in liveSystemParams) {
+      return liveSystemParams[paramName];
+    }
+    const defaultVal = specSystemParams.find(
+      (p) => p.param === paramName && "default" in p,
+    )?.default;
+    return defaultVal !== undefined ? String(defaultVal) : undefined;
+  };
+
+  const v1 = getParam(V1_MEMORY_PARAM);
+  const v2 = getParam(V2_MEMORY_PARAM);
+
+  if (v1 && v2) {
+    return memoryToMb(v1) > memoryToMb(v2) ? v1 : v2;
+  }
+  return v2 ?? v1;
+}
+
+/**
  * Translates a currently deployed Extension instance into a Functions environment.
  * This includes setting any default params not set in the deployed instance to their
  * default value, writing any system params under the reserved EXT_MIGRATED_SYSTEM_ prefix,
@@ -125,6 +167,9 @@ export function functionsEnvFromInstance(instance: ExtensionInstance): Record<st
 
   // System params aren't necessarily defined in the spec, but we do respect any defaults
   for (const [sysParamName, sysParamValue] of Object.entries(liveSystemParams)) {
+    if (sysParamName.endsWith("/memory")) {
+      continue;
+    }
     let renamed = sysParamName
       .replace(/^firebaseextensions\.v1beta\.(v2)?function\//, "EXT_MIGRATED_SYSTEM_")
       .toUpperCase();
@@ -134,7 +179,7 @@ export function functionsEnvFromInstance(instance: ExtensionInstance): Record<st
     envs[renamed] = sysParamValue;
   }
   for (const specSystemParam of specSystemParams) {
-    if (specSystemParam.param in liveSystemParams) {
+    if (specSystemParam.param in liveSystemParams || specSystemParam.param.endsWith("/memory")) {
       continue;
     }
     if ("default" in specSystemParam) {
@@ -146,6 +191,12 @@ export function functionsEnvFromInstance(instance: ExtensionInstance): Record<st
       }
       envs[renamed] = String(specSystemParam.default ?? "");
     }
+  }
+
+  // Handle memory system param: if both V1 and V2 memory parameters are present, pick the highest value.
+  const memory = resolveMigratedMemory(liveSystemParams, specSystemParams);
+  if (memory) {
+    envs["EXT_MIGRATED_SYSTEM_MEMORY"] = memory;
   }
 
   // Also pull in ALLOWED_EVENTS and EVENTARC_CHANNEL

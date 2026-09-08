@@ -3,7 +3,9 @@ import * as sinon from "sinon";
 
 import {
   functionsEnvFromInstance,
+  memoryToMb,
   parameterizeProject,
+  resolveMigratedMemory,
   setSecretParamsToLatest,
   ejectSecretsFromInstance,
 } from "./export";
@@ -124,6 +126,84 @@ describe("ext:export helpers", () => {
         expect(res.params["notSecret"]).to.equal(t.params["notSecret"]);
       });
     }
+  });
+
+  describe("memoryToMb", () => {
+    const testCases: { input: string; expected: number }[] = [
+      { input: "256", expected: 256 },
+      { input: "512", expected: 512 },
+      { input: "1024", expected: 1024 },
+      { input: "256Mi", expected: 256 },
+      { input: "512Mi", expected: 512 },
+      { input: "512MiB", expected: 512 },
+      { input: "1Gi", expected: 1024 },
+      { input: "1GiB", expected: 1024 },
+      { input: "2Gi", expected: 2048 },
+      { input: "2GiB", expected: 2048 },
+      { input: "1G", expected: 1024 },
+      { input: "1GB", expected: 1024 },
+      { input: "0.5Gi", expected: 512 },
+      { input: "invalid", expected: 0 },
+      { input: "", expected: 0 },
+    ];
+
+    for (const { input, expected } of testCases) {
+      it(`should parse "${input}" to ${expected} MB`, () => {
+        expect(memoryToMb(input)).to.equal(expected);
+      });
+    }
+  });
+
+  describe("resolveMigratedMemory", () => {
+    it("should return undefined if no memory params are present", () => {
+      expect(resolveMigratedMemory({}, [])).to.be.undefined;
+    });
+
+    it("should return V1 memory if only V1 is present", () => {
+      expect(
+        resolveMigratedMemory({ "firebaseextensions.v1beta.function/memory": "256" }, []),
+      ).to.equal("256");
+    });
+
+    it("should return V2 memory if only V2 is present", () => {
+      expect(
+        resolveMigratedMemory({ "firebaseextensions.v1beta.v2function/memory": "512Mi" }, []),
+      ).to.equal("512Mi");
+    });
+
+    it("should select the highest value when both V1 and V2 are present", () => {
+      expect(
+        resolveMigratedMemory(
+          {
+            "firebaseextensions.v1beta.function/memory": "1024",
+            "firebaseextensions.v1beta.v2function/memory": "512Mi",
+          },
+          [],
+        ),
+      ).to.equal("1024");
+
+      expect(
+        resolveMigratedMemory(
+          {
+            "firebaseextensions.v1beta.function/memory": "256",
+            "firebaseextensions.v1beta.v2function/memory": "512Mi",
+          },
+          [],
+        ),
+      ).to.equal("512Mi");
+    });
+
+    it("should fall back to spec defaults when live params are missing", () => {
+      expect(
+        resolveMigratedMemory({ "firebaseextensions.v1beta.function/memory": "1024" }, [
+          {
+            param: "firebaseextensions.v1beta.v2function/memory",
+            label: "Memory",
+            default: "256Mi",
+          },
+        ]),
+      ).to.equal("1024");
+    });
   });
 });
 
@@ -300,6 +380,155 @@ describe("functionsEnvFromInstance", () => {
     expect(output).to.deep.equal({
       EXT_MIGRATED_SYSTEM_MEMORY: "256",
       EXT_MIGRATED_SYSTEM_MININSTANCES: "10",
+    });
+  });
+
+  it("system params (both v1 and v2 functions, v2 higher)", () => {
+    const instance: ExtensionInstance = {
+      name: "",
+      createTime: "",
+      updateTime: "",
+      state: "ACTIVE",
+      serviceAccountEmail: "",
+      config: {
+        name: "",
+        createTime: "",
+        params: {},
+        systemParams: {
+          "firebaseextensions.v1beta.function/memory": "256",
+          "firebaseextensions.v1beta.v2function/memory": "512Mi",
+        },
+        source: {
+          name: "",
+          state: "ACTIVE",
+          packageUri: "",
+          hash: "",
+          spec: {
+            name: "",
+            version: "1",
+            resources: [],
+            params: [],
+            systemParams: [],
+          },
+        },
+      },
+    };
+    const output = functionsEnvFromInstance(instance);
+    expect(output).to.deep.equal({
+      EXT_MIGRATED_SYSTEM_MEMORY: "512Mi",
+    });
+  });
+
+  it("system params (both v1 and v2 functions, v1 higher)", () => {
+    const instance: ExtensionInstance = {
+      name: "",
+      createTime: "",
+      updateTime: "",
+      state: "ACTIVE",
+      serviceAccountEmail: "",
+      config: {
+        name: "",
+        createTime: "",
+        params: {},
+        systemParams: {
+          "firebaseextensions.v1beta.function/memory": "1024",
+          "firebaseextensions.v1beta.v2function/memory": "512Mi",
+        },
+        source: {
+          name: "",
+          state: "ACTIVE",
+          packageUri: "",
+          hash: "",
+          spec: {
+            name: "",
+            version: "1",
+            resources: [],
+            params: [],
+            systemParams: [],
+          },
+        },
+      },
+    };
+    const output = functionsEnvFromInstance(instance);
+    expect(output).to.deep.equal({
+      EXT_MIGRATED_SYSTEM_MEMORY: "1024",
+    });
+  });
+
+  it("system params (both v1 and v2 functions, equal memory)", () => {
+    const instance: ExtensionInstance = {
+      name: "",
+      createTime: "",
+      updateTime: "",
+      state: "ACTIVE",
+      serviceAccountEmail: "",
+      config: {
+        name: "",
+        createTime: "",
+        params: {},
+        systemParams: {
+          "firebaseextensions.v1beta.function/memory": "256",
+          "firebaseextensions.v1beta.v2function/memory": "256Mi",
+        },
+        source: {
+          name: "",
+          state: "ACTIVE",
+          packageUri: "",
+          hash: "",
+          spec: {
+            name: "",
+            version: "1",
+            resources: [],
+            params: [],
+            systemParams: [],
+          },
+        },
+      },
+    };
+    const output = functionsEnvFromInstance(instance);
+    expect(output).to.deep.equal({
+      EXT_MIGRATED_SYSTEM_MEMORY: "256Mi",
+    });
+  });
+
+  it("system params (v1 in live, v2 in spec defaults, v1 higher)", () => {
+    const instance: ExtensionInstance = {
+      name: "",
+      createTime: "",
+      updateTime: "",
+      state: "ACTIVE",
+      serviceAccountEmail: "",
+      config: {
+        name: "",
+        createTime: "",
+        params: {},
+        systemParams: {
+          "firebaseextensions.v1beta.function/memory": "1024",
+        },
+        source: {
+          name: "",
+          state: "ACTIVE",
+          packageUri: "",
+          hash: "",
+          spec: {
+            name: "",
+            version: "1",
+            resources: [],
+            params: [],
+            systemParams: [
+              {
+                param: "firebaseextensions.v1beta.v2function/memory",
+                label: "Memory",
+                default: "256Mi",
+              },
+            ],
+          },
+        },
+      },
+    };
+    const output = functionsEnvFromInstance(instance);
+    expect(output).to.deep.equal({
+      EXT_MIGRATED_SYSTEM_MEMORY: "1024",
     });
   });
 

@@ -22,12 +22,31 @@ export const regionParam = defineString("FUNCTION_DEFAULT_REGION", {
   description: "Global default region where functions should be deployed. Can be overriden per-function.",
 });
 
+/**
+ * Normalizes a memory string (e.g. "512Mi", "1Gi", "256", "1024") into a valid MemoryOption (e.g. "512MiB", "1GiB").
+ */
+function parseMemory(raw?: string): MemoryOption | undefined {
+  if (!raw) {
+    return undefined;
+  }
+  const match = raw.trim().match(/^(\d+)(Mi|Gi)B?$/i);
+  if (match) {
+    const unit = match[2].toUpperCase() === "GI" ? "GiB" : "MiB";
+    return `${match[1]}${unit}` as MemoryOption;
+  }
+  const mb = parseInt(raw, 10);
+  if (!isNaN(mb)) {
+    return (mb >= 1024 && mb % 1024 === 0 ? `${mb / 1024}GiB` : `${mb}MiB`) as MemoryOption;
+  }
+  return undefined;
+}
+
 // This allows you to set default options that apply to all functions in this
 // kit. Learn more about these options and additional configurations at:
 // https://firebase.google.com/docs/reference/functions/2nd-gen/node/firebase-functions.globaloptions
 setGlobalOptions({
   region: regionParam,
-  memory: (process.env.EXT_MIGRATED_SYSTEM_MEMORY as MemoryOption) ?? undefined,
+  memory: parseMemory(process.env.EXT_MIGRATED_SYSTEM_MEMORY),
   timeoutSeconds: process.env.EXT_MIGRATED_SYSTEM_TIMEOUTSECONDS
     ? Number(process.env.EXT_MIGRATED_SYSTEM_TIMEOUTSECONDS)
     : undefined,
